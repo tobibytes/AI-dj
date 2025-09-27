@@ -4,8 +4,12 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Volume2, Headphones } from "lucide-react"
 
-export function DJMixer() {
-  const [crossfader, setCrossfader] = useState(50)
+interface DJMixerProps {
+  crossfader: number
+  onCrossfaderChange: (value: number) => void
+}
+
+export function DJMixer({ crossfader, onCrossfaderChange }: DJMixerProps) {
   const [leftGain, setLeftGain] = useState(75)
   const [rightGain, setRightGain] = useState(75)
   const [leftEQHigh, setLeftEQHigh] = useState(50)
@@ -154,7 +158,7 @@ export function DJMixer() {
             min="0"
             max="100"
             value={crossfader}
-            onChange={(e) => setCrossfader(Number.parseInt(e.target.value))}
+            onChange={(e) => onCrossfaderChange(Number.parseInt(e.target.value))}
             className="w-full h-3 bg-secondary rounded-lg appearance-none cursor-pointer"
           />
           <div className="flex justify-between text-xs text-muted-foreground mt-1">
