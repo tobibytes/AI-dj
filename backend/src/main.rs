@@ -14,7 +14,7 @@ fn get_stream(video_url: &str) -> anyhow::Result<String> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let url = get_stream("https://youtu.be/AKdFb0ljCJ0")?;
+    let url = get_stream("https://youtu.be/Ut6_veYYRa4")?;
     println!("Direct stream: {}", url);
     Ok(())
 }
