@@ -3,12 +3,18 @@ import { Turntable } from "@/components/turn-table";
 import { DJMixer } from "@/components/dj-mixer";
 import { Button } from "@/components/ui/button";
 import { useRef, useState } from "react";
+import { QueuePanel, type Track } from "@/components/queue-panel";
+import nextTracksJson from "@/public/tracks.json";
 
 export default function Home() {
   const track1Ref = useRef<HTMLAudioElement | null>(null);
   const track2Ref = useRef<HTMLAudioElement | null>(null);
 
   const [crossfader, setCrossfader] = useState(50);
+
+  // Queue data (static for now)
+  const nextTracks = nextTracksJson as Track[];
+  const recentTracks: Track[] = [];
 
   // Equal-power volume mapping for both decks from crossfader position t [0..1]
   const updateVolumes = (t: number) => {
@@ -144,6 +150,11 @@ export default function Home() {
           </Button>
         </div>
       </div>
+
+      <div className="mt-8">
+        <QueuePanel nextTracks={nextTracks} recentTracks={recentTracks} />
+      </div>
+
     </main>
   );
 }
