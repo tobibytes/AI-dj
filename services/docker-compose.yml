@@ -1,0 +1,14 @@
+services:
+  backend:
+    container_name: backend
+    build: ./backend
+    env_file:
+      - ./.env
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+networks:
+  default:
+    name: app-network
+    driver: bridge
