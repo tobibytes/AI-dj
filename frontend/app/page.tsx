@@ -1,159 +1,104 @@
-"use client"
-import { Turntable } from "@/components/turn-table";
-import { DJMixer } from "@/components/dj-mixer";
-import { Button } from "@/components/ui/button";
-import { useRef, useState } from "react";
-import { QueuePanel, type Track } from "@/components/queue-panel";
-import nextTracksJson from "@/public/tracks.json";
+"use client";
+
+import { useState } from "react";
+import { PromptInput } from "@/components/prompt-input";
+import { MixProgress } from "@/components/mix-progress";
+import { MixComplete } from "@/components/mix-complete";
+import { useMix } from "@/lib/mix-context";
+import { Disc3, Sparkles } from "lucide-react";
 
 export default function Home() {
-  const track1Ref = useRef<HTMLAudioElement | null>(null);
-  const track2Ref = useRef<HTMLAudioElement | null>(null);
-
-  const [crossfader, setCrossfader] = useState(50);
-
-  // Queue data (static for now)
-  const nextTracks = nextTracksJson as Track[];
-  const recentTracks: Track[] = [];
-
-  // Equal-power volume mapping for both decks from crossfader position t [0..1]
-  const updateVolumes = (t: number) => {
-    const a = track1Ref.current;
-    const b = track2Ref.current;
-    if (!a && !b) return;
-    const left = Math.cos((t * Math.PI) / 2);  // Deck A
-    const right = Math.sin((t * Math.PI) / 2); // Deck B
-    if (a) a.volume = left;
-    if (b) b.volume = right;
-  };
-
-  const handleCrossfaderChange = (value: number) => {
-    setCrossfader(value);
-    updateVolumes(value / 100);
-  };
-
-  // Crossfade actions (no useEffect) -----------------------------------------
-  const fadeRAF = useRef<number | null>(null);
-
-  const cancelFade = () => {
-    if (fadeRAF.current != null) {
-      cancelAnimationFrame(fadeRAF.current);
-      fadeRAF.current = null;
-    }
-  };
-
-  // target: 0 (Deck A) or 1 (Deck B)
-  const fadeTo = (target: 0 | 1, durationMs = 2000) => {
-    cancelFade();
-    const start = crossfader / 100;
-    const end = target;
-    const startTime = performance.now();
-    const step = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(elapsed / durationMs, 1);
-      const value = start + (end - start) * progress;
-      setCrossfader(Math.round(value * 100));
-      updateVolumes(value);
-      if (progress < 1) {
-        fadeRAF.current = requestAnimationFrame(step);
-      } else {
-        fadeRAF.current = null;
-      }
-    };
-    fadeRAF.current = requestAnimationFrame(step);
-  };
-
-  const fadeToA = () => fadeTo(0);
-  const fadeToB = () => fadeTo(1);
-  const cutToA = () => {
-    cancelFade();
-    setCrossfader(0);
-    updateVolumes(0);
-  };
-  const cutToB = () => {
-    cancelFade();
-    setCrossfader(1);
-    updateVolumes(1);
-  };
-
-  // Existing deck play/pause controls ----------------------------------------
-  const toggleTrack1 = () => {
-    const audio = track1Ref.current;
-    updateVolumes(crossfader / 100);
-    if (!audio) return;
-    if (audio.paused) {
-      audio.play().catch(() => {
-        /* autoplay blocked or error */
-      });
-    } else {
-      audio.pause();
-      console.log(audio.currentTime);
-    }
-  };
-
-  const toggleTrack2 = () => {
-    const audio = track2Ref.current;
-    updateVolumes(crossfader / 100);
-    if (!audio) return;
-    if (audio.paused) {
-      audio.play().catch(() => {
-        /* autoplay blocked or error */
-      });
-    } else {
-      audio.pause();
-      console.log(audio.currentTime);
-    }
-  };
-
+  const { progress, result, error, isGenerating, cancelMix } = useMix();
+  
   return (
     <main className="container mx-auto px-4 py-8">
-      <div className="flex flex-col lg:flex-row items-start justify-center gap-8">
-        {/* Left Turntable */}
-        <div className="flex-1 max-w-md">
-          <Turntable
-            side="left"
-            trackName={nextTracks[0].name}
-            artist={nextTracks[0].artist}
-            togglePlay={toggleTrack1}
-            audioRef={track1Ref}
-            track={nextTracks[0].url}
-          />
+      {/* Hero section */}
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-primary/10 rounded-full mb-4">
+          <Disc3 className="w-8 h-8 text-primary" />
         </div>
-        {/* Right Turntable */}
-        <div className="flex-1 max-w-md">
-          <Turntable
-            side="right"
-            trackName={nextTracks[1].name}
-            artist={nextTracks[1].artist}
-            togglePlay={toggleTrack2}
-            audioRef={track2Ref}
-            track={nextTracks[1].url}
-          />
-        </div>
-      </div>
-
-      <div className="mt-8 space-y-4">
-        <DJMixer crossfader={crossfader} onCrossfaderChange={handleCrossfaderChange} />
-        <div className="flex flex-wrap gap-2 justify-center" aria-label="AI Actions">
-          <Button data-action="fade-to-a" variant="outline" onClick={fadeToA}>
-            Fade to Deck A (2s)
-          </Button>
-          <Button data-action="fade-to-b" variant="outline" onClick={fadeToB}>
-            Fade to Deck B (2s)
-          </Button>
-          <Button data-action="cut-to-a" variant="secondary" onClick={cutToA}>
-            Cut to Deck A
-          </Button>
-          <Button data-action="cut-to-b" variant="secondary" onClick={cutToB}>
-            Cut to Deck B
-          </Button>
-        </div>
-      </div>
-
-      <div className="mt-8">
-        <QueuePanel nextTracks={nextTracks} recentTracks={recentTracks} />
+        <h2 className="text-2xl font-bold mb-2">Create Your Perfect Mix</h2>
+        <p className="text-muted-foreground max-w-lg mx-auto">
+          Describe the vibe you&apos;re looking for, and our AI DJ will craft a seamless mix
+          with professional transitions, matched BPM, and harmonic key mixing.
+        </p>
       </div>
       
+      {/* Main content area */}
+      <div className="max-w-3xl mx-auto space-y-6">
+        {/* Prompt input - always visible */}
+        <PromptInput />
+        
+        {/* Error display */}
+        {error && (
+          <div className="bg-destructive/10 border border-destructive rounded-lg p-4">
+            <p className="text-destructive text-sm">{error}</p>
+          </div>
+        )}
+        
+        {/* Progress display */}
+        {isGenerating && <MixProgress />}
+        
+        {/* Cancel button while generating */}
+        {isGenerating && (
+          <div className="flex justify-center">
+            <button
+              onClick={cancelMix}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel generation
+            </button>
+          </div>
+        )}
+        
+        {/* Completed mix display */}
+        {result && progress.stage === "complete" && <MixComplete />}
+        
+        {/* Feature highlights */}
+        {!isGenerating && !result && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
+            <FeatureCard
+              icon={<Sparkles className="w-5 h-5" />}
+              title="AI-Powered"
+              description="GPT understands your mood and genre preferences"
+            />
+            <FeatureCard
+              icon={<Disc3 className="w-5 h-5" />}
+              title="Pro Transitions"
+              description="Crossfades, echo outs, filter sweeps & backspins"
+            />
+            <FeatureCard
+              icon={
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                </svg>
+              }
+              title="Harmonic Mixing"
+              description="Tracks matched by key using the Camelot wheel"
+            />
+          </div>
+        )}
+      </div>
     </main>
+  );
+}
+
+function FeatureCard({ 
+  icon, 
+  title, 
+  description 
+}: { 
+  icon: React.ReactNode; 
+  title: string; 
+  description: string;
+}) {
+  return (
+    <div className="bg-card border border-border rounded-lg p-4 text-center">
+      <div className="inline-flex items-center justify-center w-10 h-10 bg-primary/10 text-primary rounded-full mb-3">
+        {icon}
+      </div>
+      <h3 className="font-medium mb-1">{title}</h3>
+      <p className="text-sm text-muted-foreground">{description}</p>
+    </div>
   );
 }

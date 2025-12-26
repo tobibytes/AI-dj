@@ -1,0 +1,27 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Audio processing
+librosa==0.10.2
+pydub==0.25.1
+pyrubberband==0.4.0
+soundfile==0.12.1
+numpy==1.26.4
+scipy==1.14.1
+
+# Async HTTP client
+httpx==0.28.1
+
+# Redis for pub/sub
+redis==5.2.1
+
+# Spotify OAuth (for token validation)
+spotipy==2.24.0
+
+# Utils
+python-dotenv==1.0.1
+python-multipart==0.0.18
+pydantic==2.10.4
+pydantic-settings==2.7.0
+aiofiles==24.1.0

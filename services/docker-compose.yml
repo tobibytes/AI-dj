@@ -1,14 +1,82 @@
 services:
+  # Redis for pub/sub and caching
+  redis:
+    image: redis:7-alpine
+    container_name: ai-dj-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - default
+
+  # Rust backend - API gateway, WebSocket, Spotify OAuth
   backend:
-    container_name: backend
+    container_name: ai-dj-backend
     build: ./backend
     env_file:
       - ./.env
     ports:
       - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ORCHESTRATOR_URL=http://ai-orchestrator:8002
     networks:
       - default
+
+  # Python audio processor - downloads, analyzes, renders mixes
+  audio-processor:
+    container_name: ai-dj-audio-processor
+    build: ./audio-processor
+    env_file:
+      - ./.env
+    volumes:
+      - audio-temp:/tmp/audio
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - TEMP_AUDIO_DIR=/tmp/audio
+    networks:
+      - default
+    # Increase memory limit for audio processing
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # Python AI orchestrator - GPT-5.2, Spotify API, playlist generation
+  ai-orchestrator:
+    container_name: ai-dj-orchestrator
+    build: ./ai-orchestrator
+    env_file:
+      - ./.env
+    ports:
+      - "8002:8002"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - AUDIO_PROCESSOR_URL=http://audio-processor:8001
+      - BACKEND_URL=http://backend:8000
+    networks:
+      - default
+
 networks:
   default:
-    name: app-network
+    name: ai-dj-network
     driver: bridge
+
+volumes:
+  redis-data:
+  audio-temp:

@@ -7,7 +7,7 @@ use axum::{
 };
 use once_cell::sync::Lazy;
 use serde_json::from_str;
-use tracing::info;
+use tracing::{info, error};
 
 use crate::{
     models::song::{Track, TrackValueResponse},
@@ -25,62 +25,99 @@ impl SongController {
         let url = SECRET_MANAGER.get("YOUTUBE_API_URL");
         SongController { api_key: key, url }
     }
+    
     async fn _search_song(
         self: &Self,
         search_q: &String,
     ) -> Result<TrackValueResponse, anyhow::Error> {
+        // URL-encode the search query
+        let encoded_q = urlencoding::encode(search_q);
         let full_url = format!(
-            "{}?part=snippet&maxResult=2&q={}&key={}",
-            self.url, search_q, self.api_key
+            "{}?part=snippet&maxResults=2&q={}&key={}",
+            self.url, encoded_q, self.api_key
         );
-        let r_res = reqwest::Client::new().get(&full_url).send().await;
-        let res = match r_res {
-            Ok(r) => r,
-            Err(e) => panic!("{}", e.to_string()),
-        };
-        let data: serde_json::Value = match res.json().await {
-            Ok(v) => v,
-            Err(e) => panic!("{}", e.to_string()),
-        };
-        return Ok(TrackValueResponse {
-            video_id: from_str(data["items"][0]["id"]["videoId"].to_string().as_str()).unwrap(),
-            thumbnail: from_str(
-                data["items"][0]["snippet"]["thumbnails"]["default"]["url"]
-                    .to_string()
-                    .as_str(),
-            )
-            .unwrap(),
-            artist: from_str(
-                data["items"][0]["snippet"]["channelTitle"]
-                    .to_string()
-                    .as_str(),
-            )
-            .unwrap(),
-            title: from_str(data["items"][0]["snippet"]["title"].to_string().as_str()).unwrap(),
-        });
+        
+        let res = reqwest::Client::new()
+            .get(&full_url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
+        
+        if !res.status().is_success() {
+            return Err(anyhow::anyhow!("YouTube API returned status: {}", res.status()));
+        }
+        
+        let data: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+        
+        // Safely access nested JSON fields
+        let items = data.get("items")
+            .and_then(|i| i.as_array())
+            .ok_or_else(|| anyhow::anyhow!("No 'items' array in response"))?;
+        
+        if items.is_empty() {
+            return Err(anyhow::anyhow!("No search results found"));
+        }
+        
+        let first_item = &items[0];
+        
+        let video_id = first_item
+            .get("id")
+            .and_then(|i| i.get("videoId"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing videoId"))?
+            .to_string();
+        
+        let snippet = first_item
+            .get("snippet")
+            .ok_or_else(|| anyhow::anyhow!("Missing snippet"))?;
+        
+        let thumbnail = snippet
+            .get("thumbnails")
+            .and_then(|t| t.get("default"))
+            .and_then(|d| d.get("url"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+        
+        let artist = snippet
+            .get("channelTitle")
+            .and_then(|c| c.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        
+        let title = snippet
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("Unknown")
+            .to_string();
+        
+        Ok(TrackValueResponse {
+            video_id,
+            thumbnail,
+            artist,
+            title,
+        })
     }
 
     fn _get_song_stream(self: &Self, track: TrackValueResponse) -> Result<Track, anyhow::Error> {
-        info!("{:?}", track);
-        let data = self._get_stream(format!(
+        info!("Getting stream for: {:?}", track);
+        let stream_url = self._get_stream(format!(
             "https://www.youtube.com/watch?v={}",
             &track.video_id
-        ));
-        match data {
-            Ok(d) => {
-                return Ok(Track {
-                    id: track.video_id,
-                    title: track.title,
-                    thumbnail: track.thumbnail,
-                    artist: track.artist,
-                    stream_url: d,
-                });
-            }
-            Err(e) => {
-                panic!("Could not get the stream: {}", e.to_string())
-            }
-        }
+        ))?;
+        
+        Ok(Track {
+            id: track.video_id,
+            title: track.title,
+            thumbnail: track.thumbnail,
+            artist: track.artist,
+            stream_url,
+        })
     }
+    
     pub async fn get_song_data(
         self: &Self,
         queries: std::collections::HashMap<String, String>,
@@ -91,45 +128,88 @@ impl SongController {
                 let t_r_v = self._search_song(search_q).await;
                 match t_r_v {
                     Ok(track_v_res) => {
-                        let res_track = self._get_song_stream(track_v_res);
-                        match res_track {
-                            Ok(track) => return (StatusCode::OK, Json(track)).into_response(),
+                        // Use spawn_blocking for the synchronous yt-dlp call
+                        let track_v_res_clone = track_v_res.clone();
+                        let video_id = track_v_res_clone.video_id.clone();
+                        
+                        match tokio::task::spawn_blocking(move || {
+                            SongController::_get_stream_static(format!(
+                                "https://www.youtube.com/watch?v={}",
+                                video_id
+                            ))
+                        }).await {
+                            Ok(Ok(stream_url)) => {
+                                let track = Track {
+                                    id: track_v_res.video_id,
+                                    title: track_v_res.title,
+                                    thumbnail: track_v_res.thumbnail,
+                                    artist: track_v_res.artist,
+                                    stream_url,
+                                };
+                                (StatusCode::OK, Json(track)).into_response()
+                            }
+                            Ok(Err(e)) => {
+                                error!("yt-dlp error: {}", e);
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": format!("Could not get stream: {}", e)})),
+                                ).into_response()
+                            }
                             Err(e) => {
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(format!("Could not get song data: {}", e.to_string())),
-                                )
-                                    .into_response();
+                                error!("Task join error: {}", e);
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": "Internal server error"})),
+                                ).into_response()
                             }
                         }
                     }
                     Err(e) => {
-                        return (
+                        error!("YouTube search error: {}", e);
+                        (
                             StatusCode::BAD_REQUEST,
-                            Json(format!("Could not get song data: {}", e.to_string())),
-                        )
-                            .into_response();
+                            Json(serde_json::json!({"error": format!("Could not get song data: {}", e)})),
+                        ).into_response()
                     }
                 }
             }
             None => {
-                return (
+                (
                     StatusCode::BAD_REQUEST,
-                    Json(format!("Did not recieve query params")),
-                )
-                    .into_response();
+                    Json(serde_json::json!({"error": "Did not receive query params"})),
+                ).into_response()
             }
         }
     }
+    
     fn _get_stream(self: &Self, video_url: String) -> anyhow::Result<String> {
+        Self::_get_stream_static(video_url)
+    }
+    
+    // Static version for use in spawn_blocking
+    fn _get_stream_static(video_url: String) -> anyhow::Result<String> {
         let output = Command::new("yt-dlp")
             .arg("-f")
             .arg("bestaudio")
             .arg("-g") // get direct URL
-            .arg(video_url)
-            .output()?;
+            .arg(&video_url)
+            .output()
+            .map_err(|e| anyhow::anyhow!("Failed to execute yt-dlp: {}", e))?;
 
-        let url = String::from_utf8(output.stdout)?.trim().to_string();
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("yt-dlp failed: {}", stderr));
+        }
+        
+        let url = String::from_utf8(output.stdout)
+            .map_err(|e| anyhow::anyhow!("Invalid UTF-8 output: {}", e))?
+            .trim()
+            .to_string();
+        
+        if url.is_empty() {
+            return Err(anyhow::anyhow!("yt-dlp returned empty URL"));
+        }
+        
         Ok(url)
     }
 }
