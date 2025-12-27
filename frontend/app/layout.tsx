@@ -46,7 +46,7 @@ export default function RootLayout({
                       <span className="text-muted-foreground">READY</span>
                     </div>
                   </div>
-                  <div className="text-muted-foreground">Powered by OpenAI + Spotify</div>
+                  <div className="text-muted-foreground"></div>
                 </div>
               </div>
             </footer>
