@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { PromptInput } from "@/components/prompt-input";
 import { MixProgress } from "@/components/mix-progress";
 import { MixComplete } from "@/components/mix-complete";
