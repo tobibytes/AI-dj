@@ -175,14 +175,22 @@ class PlaylistGenerator:
             if bpm_min <= t.bpm <= bpm_max or bpm_min <= t.bpm * 2 <= bpm_max
         ]
         
-        # Sort by quality metrics: popularity, release date, energy match
+        # Sort by quality metrics: popularity, and basic energy preference
         def track_quality(track):
             popularity_score = track.popularity / 100.0
-            # Prefer tracks from last 10 years (rough estimate)
-            age_penalty = 0.1  # Slight penalty for very old tracks
-            energy_match = 1.0 - abs(track.energy - intent.energy_curve[0])  # Match to starting energy
             
-            return popularity_score * 0.5 + energy_match * 0.3 + (1 - age_penalty) * 0.2
+            # Simple energy preference: prefer tracks that match the overall energy level
+            # Map energy_curve to rough energy expectations
+            energy_expectation = {
+                "steady": 0.6,
+                "build-peak-cooldown": 0.7,
+                "build-only": 0.8,
+                "cooldown-only": 0.4
+            }.get(intent.energy_curve, 0.6)
+            
+            energy_match = 1.0 - abs(track.energy - energy_expectation)
+            
+            return popularity_score * 0.7 + energy_match * 0.3
         
         compatible_tracks.sort(key=track_quality, reverse=True)
         
