@@ -405,21 +405,26 @@ class AudioAnalyzer:
             buildup_bars = 8
             start_time = max(0, drop_time - (buildup_bars * seconds_per_bar))
         else:
-            # FALLBACK: Use common song structure
-            # Most pop songs: intro (0-15s), verse (15-45s), chorus (45-75s)
-            # Start around where first chorus typically begins
-            print(f"No clear drop found, using song structure heuristic")
+            # FALLBACK: Use common song structure - be more conservative
+            # Most songs have intro (0-30s), then main content
+            # Start after intro but before first major section
+            print(f"No clear drop found, using conservative song structure heuristic")
             
             if duration > 180:  # Song longer than 3 minutes
-                # Start around 40-50 seconds (buildup to first chorus)
-                start_time = 40
-                drop_time = 55  # Guess chorus hits around here
+                # Start around 30-45 seconds (after intro, before first chorus)
+                start_time = min(duration * 0.15, 45)
+                drop_time = min(duration * 0.25, 75)  # Guess chorus around here
             elif duration > 120:  # Song 2-3 minutes
-                start_time = 30
-                drop_time = 45
+                start_time = min(duration * 0.2, 35)
+                drop_time = min(duration * 0.3, 55)
             else:  # Shorter song
-                start_time = duration * 0.2
-                drop_time = duration * 0.35
+                start_time = max(duration * 0.1, 10)  # At least 10 seconds in
+                drop_time = duration * 0.4
+        
+        # Ensure we don't start too late in the song
+        max_start_time = duration - self.min_section_length
+        start_time = min(start_time, max_start_time)
+        start_time = max(start_time, 5)  # At least 5 seconds from start
         
         # Snap start to nearest beat
         start_time = self._snap_to_beat(start_time, beat_times)

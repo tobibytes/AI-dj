@@ -92,9 +92,13 @@ export function MixComplete() {
   
   const { cdnUrl, durationSeconds, playlist, targetBpm } = result;
   
-  // Estimate which track is playing based on current time
-  // Assume ~60 seconds per track segment in the mix
-  const estimatedTrackDuration = durationSeconds / playlist.length;
+  // Calculate cumulative start times for each track based on their actual durations
+  const trackStartTimes = playlist.reduce((acc, track, index) => {
+    const prevStart = index === 0 ? 0 : acc[index - 1];
+    const trackDurationSeconds = track.duration_ms / 1000;
+    acc.push(prevStart + trackDurationSeconds);
+    return acc;
+  }, [] as number[]);
   
   useEffect(() => {
     const audio = audioRef.current;
@@ -102,17 +106,16 @@ export function MixComplete() {
     
     const handleTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
-      // Estimate current track based on time
-      const estimatedIndex = Math.min(
-        Math.floor(audio.currentTime / estimatedTrackDuration),
-        playlist.length - 1
+      // Find current track based on actual start times
+      const currentIndex = trackStartTimes.findIndex((startTime, index) => 
+        audio.currentTime < (trackStartTimes[index + 1] || durationSeconds)
       );
-      setCurrentTrackIndex(estimatedIndex);
+      setCurrentTrackIndex(Math.max(0, currentIndex));
     };
     
     audio.addEventListener("timeupdate", handleTimeUpdate);
     return () => audio.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [estimatedTrackDuration, playlist.length]);
+  }, [trackStartTimes, durationSeconds]);
   
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

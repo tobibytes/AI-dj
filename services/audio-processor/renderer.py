@@ -117,12 +117,22 @@ class MixRenderer:
     ) -> str:
         """
         Time-stretch audio to target BPM using rubberband
+        Only stretch if BPM difference is significant (>5% or >3 BPM)
         """
-        if abs(original_bpm - target_bpm) < 1.0:
-            # No significant stretch needed
+        bpm_diff = abs(original_bpm - target_bpm)
+        bpm_ratio = min(original_bpm, target_bpm) / max(original_bpm, target_bpm)
+        
+        # Only stretch if difference is >5% AND >2 BPM (avoids micro-adjustments)
+        if bpm_diff <= 2.0 or bpm_ratio > 0.95:
+            print(f"Track {track_index+1}: Keeping original BPM {original_bpm:.1f} (close to target {target_bpm:.1f})")
             return file_path
         
         stretch_ratio = original_bpm / target_bpm
+        
+        # Limit extreme stretching (more than 20% change)
+        if stretch_ratio < 0.8 or stretch_ratio > 1.25:
+            print(f"Track {track_index+1}: BPM change too extreme ({original_bpm:.1f} -> {target_bpm:.1f}), keeping original")
+            return file_path
         
         output_path = self.temp_dir / f"stretched_{session_id}_{track_index}.wav"
         
@@ -138,6 +148,7 @@ class MixRenderer:
         
         try:
             subprocess.run(cmd, check=True, capture_output=True)
+            print(f"Track {track_index+1}: Stretched BPM {original_bpm:.1f} -> {target_bpm:.1f} (ratio: {stretch_ratio:.3f})")
             return str(output_path)
         except subprocess.CalledProcessError as e:
             # Fallback: return original (will be slightly off-tempo)
@@ -236,6 +247,28 @@ class MixRenderer:
             bars = transition.bars if transition else 8
             beats = bars * 4
             transition_duration_ms = int(beats * 500)  # ~4 seconds for 8 bars at 120bpm
+            
+            # Adjust transition based on song structure if available
+            if hasattr(current_track, 'sections') and current_track.sections:
+                # Try to transition during a less critical section (not during chorus/drop)
+                current_sections = current_track.sections
+                mix_duration_so_far = len(mix) / 1000.0  # Convert to seconds
+                
+                # Find sections that would be playing during transition
+                transition_start_time = mix_duration_so_far - (transition_duration_ms / 2000.0)  # Middle of transition
+                transition_end_time = mix_duration_so_far + (transition_duration_ms / 2000.0)
+                
+                # Check if transition overlaps with high-energy sections
+                overlaps_high_energy = any(
+                    section.start <= transition_end_time and section.end >= transition_start_time
+                    and (section.name in ['chorus', 'drop'] or section.energy > 0.7)
+                    for section in current_sections
+                )
+                
+                if overlaps_high_energy:
+                    # Shorten transition to avoid cutting through important parts
+                    transition_duration_ms = min(transition_duration_ms, 3000)  # Max 3 seconds
+                    print(f"Shortened transition for {current_track.title} to avoid cutting through high-energy section")
             
             # Ensure transition duration is reasonable
             max_transition = min(len(mix) // 2, len(incoming) // 2, 8000)  # Max 8 seconds

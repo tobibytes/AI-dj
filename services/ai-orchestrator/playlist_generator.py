@@ -3,6 +3,7 @@ Playlist Generator - Spotify-based track discovery and harmonic ordering
 """
 
 import asyncio
+import logging
 from typing import Optional
 
 import spotipy
@@ -174,17 +175,31 @@ class PlaylistGenerator:
             if bpm_min <= t.bpm <= bpm_max or bpm_min <= t.bpm * 2 <= bpm_max
         ]
         
+        # Sort by quality metrics: popularity, release date, energy match
+        def track_quality(track):
+            popularity_score = track.popularity / 100.0
+            # Prefer tracks from last 10 years (rough estimate)
+            age_penalty = 0.1  # Slight penalty for very old tracks
+            energy_match = 1.0 - abs(track.energy - intent.energy_curve[0])  # Match to starting energy
+            
+            return popularity_score * 0.5 + energy_match * 0.3 + (1 - age_penalty) * 0.2
+        
+        compatible_tracks.sort(key=track_quality, reverse=True)
+        
         # If not enough tracks, expand BPM range
         if len(compatible_tracks) < intent.track_count:
             bpm_min = intent.target_bpm * 0.8
             bpm_max = intent.target_bpm * 1.2
-            compatible_tracks = [
+            expanded_tracks = [
                 t for t in tracks_with_features
                 if bpm_min <= t.bpm <= bpm_max or bpm_min <= t.bpm * 2 <= bpm_max
             ]
+            expanded_tracks.sort(key=track_quality, reverse=True)
+            compatible_tracks = expanded_tracks
         
-        # If still not enough, use all tracks
+        # If still not enough, use all tracks (but still sort by quality)
         if len(compatible_tracks) < intent.track_count:
+            tracks_with_features.sort(key=track_quality, reverse=True)
             compatible_tracks = tracks_with_features
         
         # Order tracks harmonically
@@ -390,7 +405,7 @@ class PlaylistGenerator:
                 else:
                     all_features.extend([None] * len(batch))
             except Exception as e:
-                print(f"Audio features unavailable (expected - API deprecated): {e}")
+                logging.info(f"Audio features unavailable (expected - API deprecated): {e}")
                 all_features.extend([None] * len(batch))
         
         # Combine track info with features (or estimated values)
