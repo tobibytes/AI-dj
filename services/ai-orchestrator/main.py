@@ -1,10 +1,9 @@
 """
 AI Orchestrator Service - AI DJ
-GPT-5.2 powered prompt interpretation, playlist generation, and mix orchestration
+Direct Spotify playlist search and track extraction
 """
 
 import asyncio
-import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -16,16 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
-from prompt_interpreter import PromptInterpreter, MixIntent
 from playlist_generator import PlaylistGenerator, PlaylistTrack
-from trends import TrendsFetcher
 
 
 class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
-    openai_api_key: str = ""
-    spotify_client_id: str = ""
-    spotify_client_secret: str = ""
+    spotify_token: str = ""
     audio_processor_url: str = "http://audio-processor:8001"
     backend_url: str = "http://backend:8000"
     
@@ -45,6 +40,9 @@ async def lifespan(app: FastAPI):
     global redis_client
     
     # Startup
+    print(f"Orchestrator connecting to Redis at: {settings.redis_url}")
+    import logging
+    logging.warning(f"Orchestrator connecting to Redis at: {settings.redis_url}")
     redis_client = redis.from_url(settings.redis_url, decode_responses=True)
     
     yield
@@ -56,7 +54,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI DJ Orchestrator",
-    description="GPT-5.2 powered mix generation and orchestration",
+    description="GPT-4o powered mix generation and orchestration",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -75,7 +73,6 @@ app.add_middleware(
 class GenerateMixRequest(BaseModel):
     prompt: str
     duration_minutes: Optional[int] = None  # Override, otherwise GPT interprets
-    spotify_access_token: str
 
 
 class TransitionConfig(BaseModel):
@@ -89,7 +86,6 @@ class TrackInfo(BaseModel):
     title: str
     artist: str
     duration_ms: int
-    bpm: float
     key: str
     energy: float
     danceability: float
@@ -101,53 +97,27 @@ class GenerateMixResponse(BaseModel):
     status: str
     message: str
     playlist: list[TrackInfo] = []
-    target_bpm: float = 0
     estimated_duration_minutes: float = 0
 
 
-class InterpretPromptRequest(BaseModel):
-    prompt: str
-
-
-class GetPlaylistRequest(BaseModel):
-    intent: MixIntent
-    spotify_access_token: str
-
-
-class StartRenderRequest(BaseModel):
-    session_id: str
-    playlist: list[TrackInfo]
-    target_bpm: float
-    transitions: list[TransitionConfig]
-
-
 # Initialize services
-def get_interpreter(api_key: str) -> PromptInterpreter:
-    return PromptInterpreter(api_key=api_key)
-
-
-def get_playlist_generator(
-    client_id: str,
-    client_secret: str,
-    access_token: str
-) -> PlaylistGenerator:
-    return PlaylistGenerator(
-        client_id=client_id,
-        client_secret=client_secret,
-        access_token=access_token
-    )
-
-
-trends_fetcher = TrendsFetcher()
+def get_playlist_generator(access_token: str) -> PlaylistGenerator:
+    return PlaylistGenerator(access_token)
 
 
 async def publish_progress(session_id: str, stage: str, progress: int, detail: str = ""):
     """Publish progress update to Redis"""
-    if redis_client:
-        await redis_client.publish(
-            f"mix:{session_id}:progress",
-            f'{{"stage": "{stage}", "progress": {progress}, "detail": "{detail}"}}'
-        )
+    try:
+        if redis_client:
+            channel = f"mix:{session_id}:progress"
+            message = f'{{"stage": "{stage}", "progress": {progress}, "detail": "{detail}"}}'
+            await redis_client.publish(channel, message)
+            print(f"Published progress to Redis channel {channel}: {message}")
+        else:
+            print(f"Redis not available, skipping progress update: {stage} {progress}% - {detail}")
+    except Exception as e:
+        # Redis not available, continue without progress updates
+        print(f"Failed to publish progress update: {e}")
 
 
 @app.get("/health")
@@ -155,98 +125,81 @@ async def health_check():
     return {"status": "healthy", "service": "ai-orchestrator"}
 
 
-@app.post("/interpret", response_model=MixIntent)
-async def interpret_prompt(
-    request: InterpretPromptRequest,
-    x_openai_key: str = Header(None, alias="X-OpenAI-Key")
-):
-    """
-    Interpret a user prompt using GPT-5.2 to extract mix parameters
-    """
-    api_key = x_openai_key or settings.openai_api_key
-    if not api_key:
-        raise HTTPException(status_code=400, detail="OpenAI API key required")
-    
-    try:
-        interpreter = get_interpreter(api_key)
-        
-        # Get current trends for context
-        trends = await trends_fetcher.get_trending_context()
-        
-        intent = await interpreter.interpret(request.prompt, trends_context=trends)
-        return intent
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/generate-playlist")
-async def generate_playlist(
-    request: GetPlaylistRequest,
-    x_openai_key: str = Header(None, alias="X-OpenAI-Key")
-):
-    """
-    Generate a playlist based on interpreted intent
-    """
-    try:
-        generator = get_playlist_generator(
-            settings.spotify_client_id,
-            settings.spotify_client_secret,
-            request.spotify_access_token
-        )
-        
-        api_key = x_openai_key or settings.openai_api_key
-        interpreter = get_interpreter(api_key) if api_key else None
-        
-        playlist = await generator.generate(request.intent, interpreter)
-        
-        return {"playlist": playlist}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/generate-mix", response_model=GenerateMixResponse)
-async def generate_mix(
-    request: GenerateMixRequest,
-    x_openai_key: str = Header(None, alias="X-OpenAI-Key")
-):
+async def generate_mix(request: GenerateMixRequest):
     """
-    Full mix generation pipeline:
-    1. Interpret prompt with GPT-5.2
-    2. Generate playlist from Spotify
-    3. Order by harmonic compatibility
-    4. Suggest transitions
-    5. Trigger audio processor to download, analyze, render
+    Simplified mix generation pipeline:
+    1. Search Spotify for playlists using the prompt
+    2. Pick the first playlist
+    3. Get tracks from that playlist
+    4. Send to audio processor for download and mixing
     """
     session_id = str(uuid.uuid4())
-    
-    api_key = x_openai_key or settings.openai_api_key
-    if not api_key:
-        raise HTTPException(status_code=400, detail="OpenAI API key required")
-    
+
     try:
-        # Step 1: Interpret prompt
-        await publish_progress(session_id, "interpreting", 0, "Understanding your request...")
+        # Create mix session in database
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{settings.backend_url}/api/mixes/{session_id}/create",
+                    json={"prompt": request.prompt}
+                )
+                if response.status_code != 200:
+                    print(f"Warning: Failed to create mix session in database: {response.text}")
+        except Exception as e:
+            print(f"Warning: Could not connect to backend for session creation: {e}")
+
+        # Small delay to allow websocket to connect and subscribe
+        await asyncio.sleep(1.0)
         
-        interpreter = get_interpreter(api_key)
-        trends = await trends_fetcher.get_trending_context()
-        intent = await interpreter.interpret(request.prompt, trends_context=trends)
+        # Step 1: Search for playlists on Spotify
+        await publish_progress(session_id, "searching", 0, f"Searching Spotify for playlists: '{request.prompt}'")
+        await publish_progress(session_id, "searching", 10, "Connecting to Spotify API...")
+
+        generator = get_playlist_generator(settings.spotify_token)
+        await publish_progress(session_id, "searching", 25, "Querying Spotify for matching playlists...")
         
-        # Override duration if specified
-        if request.duration_minutes:
-            intent.duration_minutes = request.duration_minutes
+        playlist = await generator.search_playlist_and_get_tracks(request.prompt, request.duration_minutes)
+        await publish_progress(session_id, "searching", 75, f"Found playlist with {len(playlist)} tracks")
+        await publish_progress(session_id, "searching", 100, f"Playlist search complete")
+
+        # Step 2: Process tracks
+        await publish_progress(session_id, "processing", 0, "Processing track metadata...")
         
-        await publish_progress(session_id, "interpreting", 100, f"Creating a {intent.duration_minutes} minute {', '.join(intent.genres)} mix")
-        
-        # Step 2: Generate playlist
-        await publish_progress(session_id, "fetching", 0, "Finding tracks on Spotify...")
-        
-        generator = get_playlist_generator(
-            settings.spotify_client_id,
-            settings.spotify_client_secret,
-            request.spotify_access_token
-        )
-        
-        playlist = await generator.generate(intent, interpreter)
+        # Convert to response format
+        tracks = []
+        transitions = []
+
+        for i, track in enumerate(playlist):
+            tracks.append(TrackInfo(
+                spotify_id=track.spotify_id,
+                title=track.title,
+                artist=track.artist,
+                duration_ms=track.duration_ms,
+                key=track.key,
+                energy=track.energy,
+                danceability=track.danceability,
+                transition=TransitionConfig(
+                    type=track.transition_type,
+                    bars=track.transition_bars,
+                    direction=track.transition_direction
+                )
+            ))
+            transitions.append(TransitionConfig(
+                type=track.transition_type,
+                bars=track.transition_bars,
+                direction=track.transition_direction
+            ))
+            
+            # Send progress update every 10 tracks
+            if (i + 1) % 10 == 0:
+                progress = int(20 + (i + 1) / len(playlist) * 30)  # 20-50% for processing
+                await publish_progress(session_id, "processing", progress, f"Processed {i + 1}/{len(playlist)} tracks...")
+
+        await publish_progress(session_id, "processing", 50, "Track processing complete")
+        await publish_progress(session_id, "processing", 60, "Preparing audio processor request...")
+
+        # Step 2: Trigger audio processor (async)
         
         await publish_progress(session_id, "fetching", 100, f"Found {len(playlist)} tracks")
         
@@ -260,7 +213,6 @@ async def generate_mix(
                 title=track.title,
                 artist=track.artist,
                 duration_ms=track.duration_ms,
-                bpm=track.bpm,
                 key=track.key,
                 energy=track.energy,
                 danceability=track.danceability,
@@ -278,14 +230,17 @@ async def generate_mix(
         
         # Step 3: Trigger audio processor (async)
         # The frontend will connect via WebSocket to track progress
+        await publish_progress(session_id, "processing", 80, "Sending tracks to audio processor...")
+        
         asyncio.create_task(
             trigger_audio_processor(
                 session_id,
                 tracks,
-                intent.target_bpm,
                 transitions
             )
         )
+        
+        await publish_progress(session_id, "processing", 100, "Mix generation started - connecting to audio processor...")
         
         # Calculate estimated duration
         total_duration_ms = sum(t.duration_ms for t in tracks)
@@ -294,9 +249,8 @@ async def generate_mix(
         return GenerateMixResponse(
             session_id=session_id,
             status="processing",
-            message=f"Generating your {intent.duration_minutes} minute mix...",
+            message=f"Generating your {round(estimated_minutes, 1)} minute mix...",
             playlist=tracks,
-            target_bpm=intent.target_bpm,
             estimated_duration_minutes=round(estimated_minutes, 1)
         )
         
@@ -312,7 +266,6 @@ async def generate_mix(
 async def trigger_audio_processor(
     session_id: str,
     tracks: list[TrackInfo],
-    target_bpm: float,
     transitions: list[TransitionConfig]
 ):
     """
@@ -342,7 +295,7 @@ async def trigger_audio_processor(
             
             response = await client.post(
                 f"{settings.audio_processor_url}/process-mix",
-                params={"session_id": session_id, "target_bpm": target_bpm},
+                params={"session_id": session_id},
                 json={
                     "tracks": track_data,
                     "transitions": transition_data
@@ -377,6 +330,3 @@ async def get_trends():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)

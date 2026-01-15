@@ -3,6 +3,7 @@
 import { PromptInput } from "@/components/prompt-input";
 import { MixProgress } from "@/components/mix-progress";
 import { MixComplete } from "@/components/mix-complete";
+import { MixHistory } from "@/components/mix-history";
 import { useMix } from "@/lib/mix-context";
 import { Disc3, Sparkles } from "lucide-react";
 
@@ -52,6 +53,9 @@ export default function Home() {
         
         {/* Completed mix display */}
         {result && progress.stage === "complete" && <MixComplete />}
+        
+        {/* Mix history - show when not generating */}
+        {!isGenerating && <MixHistory />}
         
         {/* Feature highlights */}
         {!isGenerating && !result && (

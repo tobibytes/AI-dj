@@ -3,6 +3,7 @@ Audio Downloader - Dual path: librespot (Spotify Premium) + yt-dlp fallback
 """
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -44,33 +45,84 @@ class AudioDownloader:
             'retries': 3,
         }
     
-    async def download(
+    async def download_playlist_tracks(
         self,
-        spotify_id: str,
-        artist: str,
-        title: str
-    ) -> tuple[str, str]:
+        tracks: list[dict],  # List of track dicts with spotify_id, artist, title
+        session_id: str
+    ) -> list[dict]:
         """
-        Download a track. Returns (file_path, source).
-        Uses yt-dlp to search YouTube for the track.
+        Download multiple tracks from a playlist, avoiding duplicates.
+        Returns list of download results with file paths.
         
-        Note: librespot 0.6.0 is a Spotify Connect speaker, not a direct downloader.
-        It doesn't support --oneshot or --player-uri for direct track downloading.
+        Each track dict should have:
+        - spotify_id: str
+        - artist: str (or artists list)
+        - title: str
         """
         
-        # Use yt-dlp to download from YouTube
-        try:
-            file_path = await self._download_youtube(artist, title)
-            
-            # Validate file size - must be at least 100KB for a real song
-            file_size = Path(file_path).stat().st_size
-            if file_size < 100 * 1024:  # Less than 100KB
-                raise Exception(f"Downloaded file too small ({file_size} bytes) - likely not a valid audio file")
-            
-            print(f"Downloaded: {artist} - {title} ({file_size / 1024:.1f} KB)")
-            return file_path, "youtube"
-        except Exception as e:
-            raise Exception(f"Failed to download track: {e}")
+        downloaded_tracks = []
+        downloaded_files = set()  # Track file paths to avoid duplicates
+        processed_queries = set()  # Track search queries to avoid duplicates
+        
+        for i, track in enumerate(tracks):
+            try:
+                # Format artist name(s) like the JavaScript example
+                if isinstance(track.get('artist'), list):
+                    # Handle multiple artists
+                    artist_names = [a.get('name', '') for a in track['artist']]
+                    artist_str = ', '.join(artist_names)
+                else:
+                    artist_str = track.get('artist', '')
+                
+                title = track.get('title', '')
+                
+                # Create YouTube search query in the format shown
+                search_query = f"{title} by {artist_str}"
+                
+                # Skip if we already processed this exact query
+                if search_query.lower() in processed_queries:
+                    print(f"Skipping duplicate search: {search_query}")
+                    continue
+                
+                processed_queries.add(search_query.lower())
+                
+                print(f"Downloading track {i+1}/{len(tracks)}: {search_query}")
+                
+                # Download from YouTube
+                file_path = await self._download_youtube_formatted(search_query)
+                
+                # Validate file size
+                file_size = Path(file_path).stat().st_size
+                if file_size < 100 * 1024:  # Less than 100KB
+                    print(f"Downloaded file too small ({file_size} bytes), skipping")
+                    continue
+                
+                # Check for duplicate files (same size/content)
+                file_hash = self._get_file_hash(file_path)
+                if file_hash in downloaded_files:
+                    print(f"Duplicate file detected, skipping: {search_query}")
+                    Path(file_path).unlink()  # Clean up duplicate
+                    continue
+                
+                downloaded_files.add(file_hash)
+                
+                downloaded_tracks.append({
+                    'spotify_id': track.get('spotify_id', ''),
+                    'title': title,
+                    'artist': artist_str,
+                    'file_path': file_path,
+                    'source': 'youtube',
+                    'file_size': file_size
+                })
+                
+                print(f"✓ Downloaded: {search_query} ({file_size / 1024:.1f} KB)")
+                
+            except Exception as e:
+                print(f"✗ Failed to download: {track.get('title', 'Unknown')} - {e}")
+                continue
+        
+        print(f"Downloaded {len(downloaded_tracks)}/{len(tracks)} tracks successfully")
+        return downloaded_tracks
     
     async def _download_librespot(self, spotify_id: str) -> str:
         """
@@ -166,19 +218,17 @@ class AudioDownloader:
                     path.unlink()
             raise e
     
-    async def _download_youtube(self, artist: str, title: str) -> str:
+    async def _download_youtube_formatted(self, search_query: str) -> str:
         """
-        Download from YouTube using yt-dlp
-        Searches for the track and downloads best audio quality
+        Download from YouTube using the formatted search query (like "Song Name by Artist")
         """
-        search_query = f"{artist} - {title} official audio"
         
         # Generate unique filename
         file_id = str(uuid.uuid4())[:8]
-        safe_title = "".join(c for c in f"{artist}_{title}" if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        safe_title = safe_title[:50]  # Limit length
+        safe_query = "".join(c for c in search_query if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_query = safe_query[:50]  # Limit length
         
-        output_template = str(self.temp_dir / f"{file_id}_{safe_title}")
+        output_template = str(self.temp_dir / f"{file_id}_{safe_query}")
         
         yt_opts = {
             **self.yt_dlp_opts,
@@ -189,7 +239,7 @@ class AudioDownloader:
             # Run yt-dlp in thread pool to not block
             def do_download():
                 with yt_dlp.YoutubeDL(yt_opts) as ydl:
-                    # Search and download
+                    # Search and download using the formatted query
                     result = ydl.extract_info(f"ytsearch1:{search_query}", download=True)
                     
                     if result and 'entries' in result:
@@ -217,7 +267,38 @@ class AudioDownloader:
             raise Exception("Downloaded file not found")
             
         except Exception as e:
-            raise Exception(f"YouTube download failed: {e}")
+            raise Exception(f"YouTube download failed for '{search_query}': {e}")
+    
+    def _get_file_hash(self, file_path: str) -> str:
+        """
+        Get a simple hash of the file for duplicate detection
+        Uses file size + first/last 1KB for basic content matching
+        """
+        try:
+            path = Path(file_path)
+            file_size = path.stat().st_size
+            
+            # Read first 1KB
+            with open(path, 'rb') as f:
+                first_kb = f.read(1024)
+            
+            # Read last 1KB
+            with open(path, 'rb') as f:
+                f.seek(max(0, file_size - 1024))
+                last_kb = f.read(1024)
+            
+            # Simple hash combining size and content samples
+            import hashlib
+            hasher = hashlib.md5()
+            hasher.update(str(file_size).encode())
+            hasher.update(first_kb)
+            hasher.update(last_kb)
+            
+            return hasher.hexdigest()
+            
+        except Exception:
+            # Fallback to just file size if reading fails
+            return str(Path(file_path).stat().st_size)
     
     async def _convert_to_mp3(self, input_path: str, output_path: str):
         """Convert audio file to MP3 using ffmpeg"""

@@ -33,7 +33,6 @@ class MixRenderer:
     def render(
         self,
         tracks: list,  # List of TrackWithAnalysis
-        target_bpm: float,
         output_format: str = "mp3",
         session_id: str = "",
         progress_callback: Optional[Callable] = None
@@ -50,28 +49,20 @@ class MixRenderer:
             # Just return the single track
             return tracks[0].file_path
         
-        # Load and time-stretch all tracks to target BPM
+        # Use tracks as-is (no time-stretching)
         stretched_tracks = []
         for i, track in enumerate(tracks):
             if progress_callback:
                 progress_callback(
                     "rendering",
                     int((i / len(tracks)) * 50),
-                    f"Time-stretching: {track.artist} - {track.title}"
+                    f"Processing: {track.artist} - {track.title}"
                 )
             
-            stretched_path = self._time_stretch(
-                track.file_path,
-                track.bpm,
-                target_bpm,
-                session_id,
-                i
-            )
             stretched_tracks.append({
-                'path': stretched_path,
+                'path': track.file_path,
                 'track': track,
-                # Adjust timing based on stretch ratio
-                'stretch_ratio': track.bpm / target_bpm,
+                'stretch_ratio': 1.0,  # No stretching
             })
         
         # Build the mix with transitions
@@ -107,54 +98,7 @@ class MixRenderer:
         
         return str(output_path)
     
-    def _time_stretch(
-        self,
-        file_path: str,
-        original_bpm: float,
-        target_bpm: float,
-        session_id: str,
-        track_index: int
-    ) -> str:
-        """
-        Time-stretch audio to target BPM using rubberband
-        Only stretch if BPM difference is significant (>5% or >3 BPM)
-        """
-        bpm_diff = abs(original_bpm - target_bpm)
-        bpm_ratio = min(original_bpm, target_bpm) / max(original_bpm, target_bpm)
-        
-        # Only stretch if difference is >5% AND >2 BPM (avoids micro-adjustments)
-        if bpm_diff <= 2.0 or bpm_ratio > 0.95:
-            print(f"Track {track_index+1}: Keeping original BPM {original_bpm:.1f} (close to target {target_bpm:.1f})")
-            return file_path
-        
-        stretch_ratio = original_bpm / target_bpm
-        
-        # Limit extreme stretching (more than 20% change)
-        if stretch_ratio < 0.8 or stretch_ratio > 1.25:
-            print(f"Track {track_index+1}: BPM change too extreme ({original_bpm:.1f} -> {target_bpm:.1f}), keeping original")
-            return file_path
-        
-        output_path = self.temp_dir / f"stretched_{session_id}_{track_index}.wav"
-        
-        # Use rubberband CLI for high-quality time stretching
-        cmd = [
-            "rubberband",
-            "--tempo", str(stretch_ratio),
-            "--pitch", "1.0",  # Preserve pitch
-            "-2",  # High quality
-            file_path,
-            str(output_path)
-        ]
-        
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            print(f"Track {track_index+1}: Stretched BPM {original_bpm:.1f} -> {target_bpm:.1f} (ratio: {stretch_ratio:.3f})")
-            return str(output_path)
-        except subprocess.CalledProcessError as e:
-            # Fallback: return original (will be slightly off-tempo)
-            print(f"Rubberband failed: {e}, using original tempo")
-            return file_path
-    
+
     def _build_mix(
         self,
         stretched_tracks: list,

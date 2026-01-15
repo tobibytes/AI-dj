@@ -1,5 +1,6 @@
 // Spotify routes
 use axum::{routing::get, Router};
+use crate::db::Database;
 
 use crate::controllers::spotify::{
     spotify_auth_route, spotify_callback_route, spotify_refresh_route,
@@ -7,7 +8,7 @@ use crate::controllers::spotify::{
     spotify_audio_features_route, spotify_recommendations_route,
 };
 
-pub fn spotify_routes() -> Router {
+pub fn spotify_routes() -> Router<Database> {
     Router::new()
         .route("/auth", get(spotify_auth_route))
         .route("/callback", get(spotify_callback_route))

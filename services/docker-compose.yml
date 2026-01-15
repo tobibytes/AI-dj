@@ -1,19 +1,39 @@
 services:
   # Redis for pub/sub and caching
-  redis:
-    image: redis:7-alpine
-    container_name: ai-dj-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - default
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: ai-dj-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   networks:
+  #     - default
+
+  # PostgreSQL database for mix persistence
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: ai-dj-postgres
+  #   environment:
+  #     POSTGRES_DB: ai_dj
+  #     POSTGRES_USER: ai_dj_user
+  #     POSTGRES_PASSWORD: ai_dj_password
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ai_dj_user -d ai_dj"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   networks:
+  #     - default
 
   # Rust backend - API gateway, WebSocket, Spotify OAuth
   backend:
@@ -23,11 +43,14 @@ services:
       - ./.env
     ports:
       - "8000:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
+    # depends_on:
+    #   redis:
+    #     condition: service_healthy
+    #   postgres:
+    #     condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+    #   - REDIS_URL=redis://redis:6379
+    #   - DATABASE_URL=postgres://ai_dj_user:ai_dj_password@postgres:5432/ai_dj
       - ORCHESTRATOR_URL=http://ai-orchestrator:8002
     networks:
       - default
@@ -40,11 +63,11 @@ services:
       - ./.env
     volumes:
       - audio-temp:/tmp/audio
-    depends_on:
-      redis:
-        condition: service_healthy
+    # depends_on:
+    #   redis:
+    #     condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      # - REDIS_URL=redis://redis:6379
       - TEMP_AUDIO_DIR=/tmp/audio
     networks:
       - default
@@ -62,11 +85,11 @@ services:
       - ./.env
     ports:
       - "8002:8002"
-    depends_on:
-      redis:
-        condition: service_healthy
+    # depends_on:
+    #   redis:
+    #     condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      # - REDIS_URL=redis://redis:6379
       - AUDIO_PROCESSOR_URL=http://audio-processor:8001
       - BACKEND_URL=http://backend:8000
     networks:
@@ -78,5 +101,6 @@ networks:
     driver: bridge
 
 volumes:
-  redis-data:
+  # redis-data:
+  # postgres-data:
   audio-temp:

@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::secrets::SECRET_MANAGER;
+use crate::db::Database;
 
 /// Spotify OAuth token storage (in production, use Redis)
 pub static TOKEN_STORE: Lazy<Arc<RwLock<HashMap<String, SpotifyTokens>>>> =
@@ -440,7 +441,7 @@ async fn store_state(state: &str) {
 // Route handlers
 
 /// GET /spotify/auth - Redirect to Spotify authorization
-pub async fn spotify_auth_route() -> impl IntoResponse {
+pub async fn spotify_auth_route(State(_database): State<Database>) -> impl IntoResponse {
     let state = generate_state();
     
     // Store state for validation in callback
@@ -453,7 +454,10 @@ pub async fn spotify_auth_route() -> impl IntoResponse {
 }
 
 /// GET /spotify/callback - OAuth callback handler
-pub async fn spotify_callback_route(Query(params): Query<AuthCallbackQuery>) -> impl IntoResponse {
+pub async fn spotify_callback_route(
+    State(_database): State<Database>,
+    Query(params): Query<AuthCallbackQuery>,
+) -> impl IntoResponse {
     // Validate CSRF state first
     let state = params.state.as_deref().unwrap_or("");
     if !validate_state(state).await {
@@ -518,7 +522,10 @@ pub async fn spotify_callback_route(Query(params): Query<AuthCallbackQuery>) -> 
 }
 
 /// GET /spotify/refresh - Refresh access token
-pub async fn spotify_refresh_route(Query(params): Query<RefreshTokenQuery>) -> impl IntoResponse {
+pub async fn spotify_refresh_route(
+    State(_database): State<Database>,
+    Query(params): Query<RefreshTokenQuery>,
+) -> impl IntoResponse {
     let store = TOKEN_STORE.read().await;
     let tokens = match store.get(&params.session_id) {
         Some(t) => t.clone(),
@@ -564,7 +571,10 @@ pub async fn spotify_refresh_route(Query(params): Query<RefreshTokenQuery>) -> i
 }
 
 /// GET /spotify/token - Fetch access token for session (one-time use after OAuth)
-pub async fn spotify_token_route(Query(params): Query<RefreshTokenQuery>) -> impl IntoResponse {
+pub async fn spotify_token_route(
+    State(_database): State<Database>,
+    Query(params): Query<RefreshTokenQuery>,
+) -> impl IntoResponse {
     let store = TOKEN_STORE.read().await;
     let tokens = match store.get(&params.session_id) {
         Some(t) => t.clone(),
@@ -584,7 +594,7 @@ pub async fn spotify_token_route(Query(params): Query<RefreshTokenQuery>) -> imp
 
 /// GET /spotify/auto-auth - Auto-authenticate using Client Credentials (no user login needed)
 /// Returns an access token that works for search, recommendations, audio features
-pub async fn spotify_auto_auth_route() -> impl IntoResponse {
+pub async fn spotify_auto_auth_route(State(_database): State<Database>) -> impl IntoResponse {
     match SPOTIFY_CONTROLLER.get_client_credentials_token().await {
         Ok(tokens) => {
             // Store tokens with a session ID
@@ -617,6 +627,7 @@ pub async fn spotify_auto_auth_route() -> impl IntoResponse {
 
 /// GET /spotify/me - Get current user profile
 pub async fn spotify_me_route(
+    State(_database): State<Database>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let access_token = match headers.get("Authorization") {
@@ -642,6 +653,7 @@ pub async fn spotify_me_route(
 
 /// GET /spotify/search - Search for tracks
 pub async fn spotify_search_route(
+    State(_database): State<Database>,
     Query(params): Query<SearchQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
@@ -671,6 +683,7 @@ pub async fn spotify_search_route(
 
 /// GET /spotify/audio-features - Get audio features for tracks
 pub async fn spotify_audio_features_route(
+    State(_database): State<Database>,
     Query(params): Query<AudioFeaturesQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
@@ -700,6 +713,7 @@ pub async fn spotify_audio_features_route(
 
 /// GET /spotify/recommendations - Get track recommendations
 pub async fn spotify_recommendations_route(
+    State(_database): State<Database>,
     Query(params): Query<RecommendationsQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {

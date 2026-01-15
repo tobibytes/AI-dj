@@ -50,6 +50,16 @@ interface MixContextType {
   generateMix: (prompt: string, durationMinutes?: number) => Promise<void>;
   cancelMix: () => void;
   resetMix: () => void;
+  
+  // Mix persistence
+  loadMix: (sessionId: string) => Promise<void>;
+  listMixes: () => Promise<MixResult[]>;
+  
+  // New functionality
+  downloadTrack: (track: MixTrack) => void;
+  saveMixToLocalStorage: (mix: MixResult) => void;
+  loadMixFromLocalStorage: (sessionId: string) => MixResult | null;
+  getSavedMixes: () => MixResult[];
 }
 
 const MixContext = createContext<MixContextType | null>(null);
@@ -306,21 +316,69 @@ export function MixProvider({ children }: { children: React.ReactNode }) {
               currentTrack: progressData.current_track,
             });
           } else if (message.type === "complete") {
-            const completeData = message.data;
-            setResult({
-              sessionId,
-              cdnUrl: completeData.cdn_url,
-              durationSeconds: completeData.duration_seconds || 0,
-              playlist,
-              targetBpm,
-            });
-            setProgress({
-              stage: "complete",
-              progress: 100,
-              detail: "Mix complete!",
-            });
-            setIsGenerating(false);
-            ws.close();
+            // Fetch complete mix data from database
+            const fetchMixData = async () => {
+              try {
+                const mixResponse = await fetch(`${BACKEND_URL}/api/mixes/${sessionId}`);
+                if (mixResponse.ok) {
+                  const mixData = await mixResponse.json();
+                  const tracks = mixData.tracks.map((track: any) => ({
+                    spotify_id: track.spotify_id,
+                    title: track.title,
+                    artist: track.artist,
+                    duration_ms: track.duration_ms,
+                    bpm: 120, // Default BPM, could be enhanced later
+                    key: track.key,
+                    energy: track.energy,
+                    danceability: track.danceability,
+                    transition: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1)?.transition_type
+                      ? {
+                          type: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_type,
+                          bars: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_bars,
+                          direction: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_direction,
+                        }
+                      : { type: "crossfade", bars: 8 }
+                  }));
+
+                  setResult({
+                    sessionId,
+                    cdnUrl: mixData.session.cdn_url || "",
+                    durationSeconds: mixData.session.estimated_duration_minutes ? mixData.session.estimated_duration_minutes * 60 : 0,
+                    playlist: tracks,
+                    targetBpm: 120, // Default BPM
+                  });
+                } else {
+                  // Fallback to websocket data if database fetch fails
+                  setResult({
+                    sessionId,
+                    cdnUrl: message.data.cdn_url || "",
+                    durationSeconds: message.data.duration_seconds || 0,
+                    playlist,
+                    targetBpm,
+                  });
+                }
+              } catch (fetchError) {
+                console.error("Failed to fetch mix data from database:", fetchError);
+                // Fallback to websocket data
+                setResult({
+                  sessionId,
+                  cdnUrl: message.data.cdn_url || "",
+                  durationSeconds: message.data.duration_seconds || 0,
+                  playlist,
+                  targetBpm,
+                });
+              }
+
+              setProgress({
+                stage: "complete",
+                progress: 100,
+                detail: "Mix complete!",
+              });
+              setIsGenerating(false);
+              ws.close();
+            };
+
+            fetchMixData();
           } else if (message.type === "error") {
             setError(message.data.error || "An error occurred");
             setProgress({
@@ -355,6 +413,143 @@ export function MixProvider({ children }: { children: React.ReactNode }) {
     }
   }, [spotifyAccessToken, fallbackToSSE]);
   
+  const loadMix = useCallback(async (sessionId: string) => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/mixes/${sessionId}`);
+      if (!response.ok) {
+        throw new Error("Failed to load mix");
+      }
+      
+      const mixData = await response.json();
+      const tracks = mixData.tracks.map((track: any) => ({
+        spotify_id: track.spotify_id,
+        title: track.title,
+        artist: track.artist,
+        duration_ms: track.duration_ms,
+        bpm: 120, // Default BPM
+        key: track.key,
+        energy: track.energy,
+        danceability: track.danceability,
+        transition: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1)?.transition_type
+          ? {
+              type: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_type,
+              bars: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_bars,
+              direction: mixData.transitions.find((t: any) => t.from_track_order === track.track_order - 1).transition_direction,
+            }
+          : { type: "crossfade", bars: 8 }
+      }));
+
+      setResult({
+        sessionId,
+        cdnUrl: mixData.session.cdn_url || "",
+        durationSeconds: mixData.session.estimated_duration_minutes ? mixData.session.estimated_duration_minutes * 60 : 0,
+        playlist: tracks,
+        targetBpm: 120, // Default BPM
+      });
+    } catch (e) {
+      console.error("Failed to load mix:", e);
+      setError("Failed to load mix from database");
+    }
+  }, []);
+  
+  const listMixes = useCallback(async (): Promise<MixResult[]> => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/mixes`);
+      if (!response.ok) {
+        throw new Error("Failed to list mixes");
+      }
+      
+      const sessions = await response.json();
+      const mixes: MixResult[] = [];
+      
+      for (const session of sessions) {
+        try {
+          const mixResponse = await fetch(`${BACKEND_URL}/api/mixes/${session.id}`);
+          if (mixResponse.ok) {
+            const mixData = await mixResponse.json();
+            const tracks = mixData.tracks.map((track: any) => ({
+              spotify_id: track.spotify_id,
+              title: track.title,
+              artist: track.artist,
+              duration_ms: track.duration_ms,
+              bpm: 120,
+              key: track.key,
+              energy: track.energy,
+              danceability: track.danceability,
+              transition: { type: "crossfade", bars: 8 }
+            }));
+            
+            mixes.push({
+              sessionId: session.id,
+              cdnUrl: mixData.session.cdn_url || "",
+              durationSeconds: mixData.session.estimated_duration_minutes ? mixData.session.estimated_duration_minutes * 60 : 0,
+              playlist: tracks,
+              targetBpm: 120,
+            });
+          }
+        } catch (e) {
+          console.error(`Failed to load mix ${session.id}:`, e);
+        }
+      }
+      
+      return mixes;
+    } catch (e) {
+      console.error("Failed to list mixes:", e);
+      return [];
+    }
+  }, []);
+  
+  // Download individual track
+  const downloadTrack = useCallback((track: MixTrack) => {
+    // Try to open Spotify track in browser
+    if (track.spotify_id) {
+      window.open(`https://open.spotify.com/track/${track.spotify_id}`, '_blank');
+    } else {
+      // Fallback: search for the track on Spotify
+      const searchQuery = encodeURIComponent(`${track.title} ${track.artist}`);
+      window.open(`https://open.spotify.com/search/${searchQuery}`, '_blank');
+    }
+  }, []);
+  
+  // Save mix to localStorage
+  const saveMixToLocalStorage = useCallback((mix: MixResult) => {
+    try {
+      const savedMixes = JSON.parse(localStorage.getItem('savedMixes') || '[]');
+      const existingIndex = savedMixes.findIndex((m: MixResult) => m.sessionId === mix.sessionId);
+      
+      if (existingIndex >= 0) {
+        savedMixes[existingIndex] = mix;
+      } else {
+        savedMixes.push(mix);
+      }
+      
+      localStorage.setItem('savedMixes', JSON.stringify(savedMixes));
+    } catch (e) {
+      console.error('Failed to save mix to localStorage:', e);
+    }
+  }, []);
+  
+  // Load mix from localStorage
+  const loadMixFromLocalStorage = useCallback((sessionId: string): MixResult | null => {
+    try {
+      const savedMixes = JSON.parse(localStorage.getItem('savedMixes') || '[]');
+      return savedMixes.find((mix: MixResult) => mix.sessionId === sessionId) || null;
+    } catch (e) {
+      console.error('Failed to load mix from localStorage:', e);
+      return null;
+    }
+  }, []);
+  
+  // Get all saved mixes from localStorage
+  const getSavedMixes = useCallback((): MixResult[] => {
+    try {
+      return JSON.parse(localStorage.getItem('savedMixes') || '[]');
+    } catch (e) {
+      console.error('Failed to get saved mixes from localStorage:', e);
+      return [];
+    }
+  }, []);
+  
   return (
     <MixContext.Provider
       value={{
@@ -369,6 +564,12 @@ export function MixProvider({ children }: { children: React.ReactNode }) {
         generateMix,
         cancelMix,
         resetMix,
+        loadMix,
+        listMixes,
+        downloadTrack,
+        saveMixToLocalStorage,
+        loadMixFromLocalStorage,
+        getSavedMixes,
       }}
     >
       {children}

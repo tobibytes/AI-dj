@@ -93,13 +93,23 @@ class DownloadResponse(BaseModel):
     error: str | None = None
 
 
+class PlaylistDownloadRequest(BaseModel):
+    tracks: list[TrackInfo]
+    session_id: str
+
+
+class PlaylistDownloadResponse(BaseModel):
+    success: bool
+    downloaded_tracks: list[dict]  # List of downloaded track info
+    error: str | None = None
+
+
 class AnalyzeRequest(BaseModel):
     file_path: str
     session_id: str
 
 
 class AnalysisResult(BaseModel):
-    bpm: float
     key: str
     energy: float
     beat_positions: list[float]  # timestamps in seconds
@@ -119,7 +129,6 @@ class TrackWithAnalysis(BaseModel):
     file_path: str
     title: str
     artist: str
-    bpm: float
     key: str
     energy: float
     intro_end: float
@@ -135,7 +144,6 @@ class TrackWithAnalysis(BaseModel):
 class RenderRequest(BaseModel):
     session_id: str
     tracks: list[TrackWithAnalysis]
-    target_bpm: float
     output_format: str = "mp3"  # "mp3" or "wav"
 
 
@@ -184,44 +192,53 @@ async def health_check():
     return {"status": "healthy", "service": "audio-processor"}
 
 
-@app.post("/download", response_model=DownloadResponse)
-async def download_track(request: DownloadRequest):
+@app.post("/download-playlist", response_model=PlaylistDownloadResponse)
+async def download_playlist(request: PlaylistDownloadRequest):
     """
-    Download a track using librespot (primary) or yt-dlp (fallback)
+    Download multiple tracks from a playlist using formatted YouTube searches.
+    Avoids duplicates and uses proper "Song by Artist" search format.
     """
     try:
         await publish_progress(
             request.session_id,
             "downloading",
             0,
-            f"{request.track.artist} - {request.track.title}",
+            f"Starting playlist download ({len(request.tracks)} tracks)",
             ""
         )
         
-        file_path, source = await downloader.download(
-            spotify_id=request.track.spotify_id,
-            artist=request.track.artist,
-            title=request.track.title
+        # Convert TrackInfo objects to dicts for the downloader
+        tracks_dict = [
+            {
+                'spotify_id': track.spotify_id,
+                'title': track.title,
+                'artist': track.artist
+            }
+            for track in request.tracks
+        ]
+        
+        # Download all tracks with duplicate prevention
+        downloaded_tracks = await downloader.download_playlist_tracks(
+            tracks_dict,
+            request.session_id
         )
         
         await publish_progress(
             request.session_id,
             "downloading",
             100,
-            f"{request.track.artist} - {request.track.title}",
-            source
+            f"Downloaded {len(downloaded_tracks)}/{len(request.tracks)} tracks",
+            "youtube"
         )
         
-        return DownloadResponse(
+        return PlaylistDownloadResponse(
             success=True,
-            file_path=file_path,
-            source=source
+            downloaded_tracks=downloaded_tracks
         )
     except Exception as e:
-        return DownloadResponse(
+        return PlaylistDownloadResponse(
             success=False,
-            file_path=None,
-            source="none",
+            downloaded_tracks=[],
             error=str(e)
         )
 
@@ -229,7 +246,7 @@ async def download_track(request: DownloadRequest):
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze_track(request: AnalyzeRequest):
     """
-    Analyze audio file for BPM, key, beat positions, etc.
+    Analyze audio file for key, beat positions, energy, etc.
     """
     try:
         await publish_progress(
@@ -266,7 +283,6 @@ async def render_mix(request: RenderRequest, background_tasks: BackgroundTasks):
         output_path = await asyncio.to_thread(
             renderer.render,
             request.tracks,
-            request.target_bpm,
             request.output_format,
             request.session_id,
             lambda stage, progress, detail: asyncio.run(
@@ -301,13 +317,12 @@ async def render_mix(request: RenderRequest, background_tasks: BackgroundTasks):
 @app.post("/process-mix")
 async def process_full_mix(
     session_id: str,
-    target_bpm: float,
     request: ProcessMixRequest,
     background_tasks: BackgroundTasks
 ):
     """
-    Full pipeline: download all tracks, analyze, render mix, upload
-    This is the main entry point called by the orchestrator
+    Full pipeline: download all tracks from playlist, analyze, render mix, upload
+    Uses formatted YouTube searches to avoid duplicates and get better matches
     """
     try:
         tracks = request.tracks
@@ -318,39 +333,70 @@ async def process_full_mix(
         if total_tracks == 0:
             raise HTTPException(status_code=400, detail="No tracks provided")
         
+        # Convert tracks to dict format for playlist download
+        tracks_dict = [
+            {
+                'spotify_id': track.spotify_id,
+                'title': track.title,
+                'artist': track.artist
+            }
+            for track in tracks
+        ]
+        
+        # Download all tracks at once with duplicate prevention
+        await publish_progress(
+            session_id,
+            "downloading",
+            0,
+            f"Downloading {total_tracks} tracks from playlist...",
+            ""
+        )
+        
+        downloaded_tracks = await downloader.download_playlist_tracks(
+            tracks_dict,
+            session_id
+        )
+        
+        await publish_progress(
+            session_id,
+            "downloading",
+            50,
+            f"Downloaded {len(downloaded_tracks)}/{total_tracks} tracks successfully",
+            "youtube"
+        )
+        
+        # Create a mapping from spotify_id to downloaded track info
+        downloaded_map = {dt['spotify_id']: dt for dt in downloaded_tracks}
+        
+        # Process each track that was successfully downloaded
+        successful_downloads = 0
         for i, track in enumerate(tracks):
-            # Download
-            await publish_progress(
-                session_id,
-                "downloading",
-                int((i / total_tracks) * 100),
-                f"Track {i+1}/{total_tracks}: {track.artist} - {track.title}"
-            )
+            spotify_id = track.spotify_id
             
-            file_path, source = await downloader.download(
-                spotify_id=track.spotify_id,
-                artist=track.artist,
-                title=track.title
-            )
+            if spotify_id not in downloaded_map:
+                print(f"Skipping track not downloaded: {track.artist} - {track.title}")
+                continue
+            
+            downloaded_info = downloaded_map[spotify_id]
+            file_path = downloaded_info['file_path']
             
             # Analyze
             await publish_progress(
                 session_id,
                 "analyzing",
-                int((i / total_tracks) * 100),
-                f"Track {i+1}/{total_tracks}: {track.artist} - {track.title}"
+                50 + int((successful_downloads / len(downloaded_tracks)) * 50),
+                f"Analyzing {successful_downloads+1}/{len(downloaded_tracks)}: {track.artist} - {track.title}"
             )
             
             analysis = await asyncio.to_thread(analyzer.analyze, file_path)
             
             # Combine track data
-            transition = transitions[i] if i < len(transitions) else TransitionConfig(type="crossfade", bars=8)
+            transition = transitions[successful_downloads] if successful_downloads < len(transitions) else TransitionConfig(type="crossfade", bars=8)
             
             processed_tracks.append(TrackWithAnalysis(
                 file_path=file_path,
                 title=track.title,
                 artist=track.artist,
-                bpm=analysis.bpm,
                 key=analysis.key,
                 energy=analysis.energy,
                 intro_end=analysis.intro_end,
@@ -361,6 +407,8 @@ async def process_full_mix(
                 best_loop_end=analysis.best_loop_end,
                 drop_time=analysis.drop_time
             ))
+            
+            successful_downloads += 1
         
         # Render mix
         await publish_progress(session_id, "rendering", 0, "Starting mix render...")
@@ -372,7 +420,6 @@ async def process_full_mix(
         output_path = await asyncio.to_thread(
             renderer.render,
             processed_tracks,
-            target_bpm,
             "mp3",
             session_id,
             None  # Progress handled above

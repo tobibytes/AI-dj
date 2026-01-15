@@ -48,57 +48,65 @@ class CDNUploader:
             content_type = "audio/wav"
         elif filename.endswith('.flac'):
             content_type = "audio/flac"
+        elif filename.endswith('.mp4'):
+            content_type = "video/mp4"
+
+        print(f"[CDN] Init upload: {filename} ({file_size} bytes), app={self.app_name}")
         
-        async with httpx.AsyncClient(timeout=600.0) as client:  # 10 min timeout for large files
-            # Step 1: Initialize upload
-            init_response = await client.post(
-                f"{self.api_url}/upload/init",
-                json={
-                    "filename": filename,
-                    "content_type": content_type,
-                    "size": file_size,
-                    "app": self.app_name,
-                }
-            )
-            init_response.raise_for_status()
-            init_data = init_response.json()
-            
-            upload_url = init_data["upload_url"]
-            key = init_data["key"]
-            public_url = init_data["public_url"]
-            
-            # Step 2: Upload file content using streaming to avoid OOM
-            async def file_stream():
-                """Generator to stream file in chunks"""
-                CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks
-                with open(path, 'rb') as f:
-                    while True:
-                        chunk = f.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        yield chunk
-            
-            upload_response = await client.put(
-                upload_url,
-                content=file_stream(),
-                headers={
-                    "Content-Type": content_type,
-                    "Content-Length": str(file_size)
-                }
-            )
-            upload_response.raise_for_status()
-            
-            # Step 3: Complete upload
-            complete_response = await client.post(
-                f"{self.api_url}/upload/complete",
-                json={
-                    "key": key,
-                    "status": "success"
-                }
-            )
-            complete_response.raise_for_status()
-            
-            return public_url
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:  # 10 min timeout for large files
+            try:
+                # Step 1: Initialize upload
+                init_response = await client.post(
+                    f"{self.api_url}/upload/init",
+                    json={
+                        "filename": filename,
+                        "content_type": content_type,
+                        "size": file_size,
+                        "app": self.app_name,
+                    }
+                )
+                init_response.raise_for_status()
+                init_data = init_response.json()
+                
+                upload_url = init_data["upload_url"]
+                key = init_data["key"]
+                public_url = init_data["public_url"]
+                
+                # Step 2: Upload file content using streaming to avoid OOM
+                async def file_stream():
+                    """Generator to stream file in chunks"""
+                    CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks
+                    with open(path, 'rb') as f:
+                        while True:
+                            chunk = f.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            yield chunk
+                
+                upload_response = await client.put(
+                    upload_url,
+                    content=file_stream(),
+                    headers={
+                        "Content-Type": content_type,
+                        "Content-Length": str(file_size)
+                    }
+                )
+                upload_response.raise_for_status()
+                
+                # Step 3: Complete upload
+                complete_response = await client.post(
+                    f"{self.api_url}/upload/complete",
+                    json={
+                        "key": key,
+                        "status": "success"
+                    }
+                )
+                complete_response.raise_for_status()
+                
+                print(f"[CDN] Upload complete: {public_url}")
+                return public_url
+            except Exception as e:
+                raise RuntimeError(f"CDN upload failed: {e}") from e
 
 
 class LocalFileStore:

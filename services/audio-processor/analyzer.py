@@ -1,5 +1,5 @@
 """
-Audio Analyzer - BPM detection, key detection, beat grid, phrase boundaries, and song structure
+Audio Analyzer - key detection, beat grid, phrase boundaries, and song structure
 """
 
 import numpy as np
@@ -21,7 +21,6 @@ class SongSection:
 @dataclass
 class AnalysisResult:
     """Result of audio analysis"""
-    bpm: float
     key: str
     energy: float
     beat_positions: List[float]
@@ -75,8 +74,8 @@ class AudioAnalyzer:
         y, sr = librosa.load(file_path, sr=self.sample_rate)
         duration = librosa.get_duration(y=y, sr=sr)
         
-        # Detect BPM and beat positions
-        bpm, beat_positions = self._detect_bpm_and_beats(y, sr)
+        # Detect beat positions (without BPM)
+        beat_positions = self._detect_beats(y, sr)
         
         # Detect musical key
         key = self._detect_key(y, sr)
@@ -85,21 +84,20 @@ class AudioAnalyzer:
         energy = self._calculate_energy(y)
         
         # Detect phrase boundaries (typically 8 or 16 bar segments)
-        phrase_boundaries = self._detect_phrase_boundaries(y, sr, beat_positions, bpm)
+        phrase_boundaries = self._detect_phrase_boundaries(y, sr, beat_positions)
         
         # Detect intro and outro points
-        intro_end, outro_start = self._detect_intro_outro(y, sr, beat_positions, bpm)
+        intro_end, outro_start = self._detect_intro_outro(y, sr, beat_positions)
         
         # NEW: Detect song structure sections
-        sections = self._detect_song_structure(y, sr, beat_positions, bpm, phrase_boundaries)
+        sections = self._detect_song_structure(y, sr, beat_positions, phrase_boundaries)
         
         # NEW: Find best loop points for DJ mix (the "money section")
         best_start, best_end, drop_time = self._find_best_loop(
-            y, sr, sections, beat_positions, bpm, duration
+            y, sr, sections, beat_positions, duration
         )
         
         return AnalysisResult(
-            bpm=round(bpm, 2),
             key=key,
             energy=round(energy, 3),
             beat_positions=[round(b, 3) for b in beat_positions.tolist()],
@@ -113,20 +111,17 @@ class AudioAnalyzer:
             drop_time=round(drop_time, 3) if drop_time else None
         )
     
-    def _detect_bpm_and_beats(self, y: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
+    def _detect_beats(self, y: np.ndarray, sr: int) -> np.ndarray:
         """
-        Detect BPM and beat positions using librosa
+        Detect beat positions using librosa (without BPM)
         """
-        # Get tempo and beat frames
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        # Get beat frames
+        _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         
         # Convert frames to time
         beat_times = librosa.frames_to_time(beat_frames, sr=sr)
         
-        # Tempo is an array in newer librosa, get scalar
-        bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-        
-        return bpm, beat_times
+        return beat_times
     
     def _detect_key(self, y: np.ndarray, sr: int) -> str:
         """
@@ -179,8 +174,7 @@ class AudioAnalyzer:
         self,
         y: np.ndarray,
         sr: int,
-        beat_times: np.ndarray,
-        bpm: float
+        beat_times: np.ndarray
     ) -> List[float]:
         """
         Detect phrase boundaries (typically 8 or 16 bar segments)
@@ -207,8 +201,7 @@ class AudioAnalyzer:
         self,
         y: np.ndarray,
         sr: int,
-        beat_times: np.ndarray,
-        bpm: float
+        beat_times: np.ndarray
     ) -> tuple[float, float]:
         """
         Detect where intro ends and outro begins
@@ -268,7 +261,6 @@ class AudioAnalyzer:
         y: np.ndarray,
         sr: int,
         beat_times: np.ndarray,
-        bpm: float,
         phrase_boundaries: List[float]
     ) -> List[SongSection]:
         """
@@ -350,7 +342,6 @@ class AudioAnalyzer:
         sr: int,
         sections: List[SongSection],
         beat_times: np.ndarray,
-        bpm: float,
         duration: float
     ) -> tuple[float, float, Optional[float]]:
         """
@@ -396,8 +387,8 @@ class AudioAnalyzer:
                 drop_time = energy_increases[0][2]
                 print(f"Found drop at {drop_time:.1f}s (energy increase: {max_increase:.3f})")
         
-        # Calculate timing
-        seconds_per_beat = 60 / bpm
+        # Calculate timing (assume ~120 BPM for bar calculations)
+        seconds_per_beat = 60 / 120  # Assume 120 BPM
         seconds_per_bar = seconds_per_beat * 4
         
         if drop_time and drop_time > 10:  # Valid drop found

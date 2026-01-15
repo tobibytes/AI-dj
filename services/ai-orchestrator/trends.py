@@ -109,10 +109,10 @@ VIRAL TRACKS/ARTISTS:
 - Peso Pluma's regional Mexican crossover
 
 MIXING NOTES:
-- Afrobeats: 95-105 BPM, log drum patterns
-- Amapiano: 110-115 BPM, distinctive basslines
-- Drill: 140 BPM (or 70 half-time)
-- Reggaeton: 90-100 BPM, dembow rhythm
+- Afrobeats: log drum patterns, energetic rhythms
+- Amapiano: distinctive basslines, groove-focused
+- Drill: heavy bass, fast-paced energy
+- Reggaeton: dembow rhythm, danceable beats
 """
         
         return context
@@ -127,56 +127,3 @@ MIXING NOTES:
             {"id": "mock4", "name": "Rush", "artist": "Ayra Starr", "chart": "viral_global", "popularity": 88},
             {"id": "mock5", "name": "Unavailable", "artist": "Davido, Musa Keys", "chart": "viral_global", "popularity": 85},
         ]
-
-
-class TikTokTrendsFetcher:
-    """
-    Fetches trending sounds from TikTok Creative Center
-    Note: Requires TikTok API access
-    """
-    
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-        self.base_url = "https://business-api.tiktok.com/open_api/v1.3"
-    
-    async def get_trending_sounds(self) -> list[dict]:
-        """
-        Get trending sounds from TikTok
-        
-        Note: This requires TikTok Business API access.
-        For now, returns empty list if no API key.
-        """
-        
-        if not self.api_key:
-            return []
-        
-        # TikTok Creative Center API integration would go here
-        # This requires business API registration
-        
-        return []
-
-
-class TwitterTrendsFetcher:
-    """
-    Fetches music-related trends from Twitter/X
-    Note: Requires Twitter API v2 access
-    """
-    
-    def __init__(self, bearer_token: Optional[str] = None):
-        self.bearer_token = bearer_token
-        self.base_url = "https://api.twitter.com/2"
-    
-    async def get_music_trends(self) -> list[str]:
-        """
-        Get music-related trending topics
-        
-        Note: Requires Twitter API v2 access (paid tier)
-        """
-        
-        if not self.bearer_token:
-            return []
-        
-        # Twitter API integration would go here
-        # Requires API access subscription
-        
-        return []
